@@ -84,5 +84,14 @@ Balance: 0.000022 ETH
 تحسين الهيكلة وإضافة ميزات جديدة
 نشر المشروع كمصدر مفتوح
 دعم منظومة Base بأدوات مطورين عملية
-📜 الرخصة
-MIT License
+📜 ## Live Demo
+
+Sovereign Identity Engine V13
+
+Features:
+- Wallet Intelligence
+- Identity Score
+- Passport
+- Verifiable Credential
+- Signature Verification
+
