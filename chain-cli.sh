@@ -223,42 +223,126 @@ cmd_tx() {
   echo "$response"
 }
 
+
+decode_abi_string() {
+  local hex="${1:-}"
+  hex="${hex#0x}"
+
+  [[ -n "$hex" ]] || return 1
+
+  # ABI dynamic string:
+  # offset(32) + length(32) + data
+  if [[ ${#hex} -ge 128 ]]; then
+    local length_hex="${hex:64:64}"
+    length_hex="${length_hex#"${length_hex%%[!0]*}"}"
+    [[ -n "$length_hex" ]] || return 1
+    local length=$((16#$length_hex))
+    if (( length >= 0 && length <= 4096 )); then
+      local data="${hex:128:$((length * 2))}"
+      if [[ -n "$data" ]]; then
+        printf '%s' "$data" | sed 's/../\\x&/g' | xargs printf '%b' 2>/dev/null || true
+        return 0
+      fi
+    fi
+  fi
+
+  # bytes32/static string fallback
+  printf '%s' "$hex" | sed 's/00*$//' | sed 's/../\\x&/g' | xargs printf '%b' 2>/dev/null
+}
+
 cmd_erc20() {
   local network="$1"
   local rpc_url="$2"
   local token="$3"
   local address="$4"
+  local mode="${5:-}"
 
-  validate_address "$token"
-  validate_address "$address"
+  [[ "$token" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "Invalid ERC-20 token address"
+  [[ "$address" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "Invalid wallet address"
 
-  # balanceOf(address)
-  # selector = 0x70a08231
-  local padded
-  padded="$(printf '%064s' "${address#0x}" | tr ' ' '0')"
+  local balance_data decimals_data symbol_data name_data
+  local balance_hex decimals_hex symbol_hex name_hex
+  local balance_raw decimals symbol name
 
-  local data="0x70a08231$padded"
+  balance_data="$(rpc "$rpc_url" "eth_call" "[{\"to\":\"$token\",\"data\":\"0x70a08231000000000000000000000000${address:2}\"},\"latest\"]")"
+  decimals_data="$(rpc "$rpc_url" "eth_call" "[{\"to\":\"$token\",\"data\":\"0x313ce567\"},\"latest\"]")"
+  symbol_data="$(rpc "$rpc_url" "eth_call" "[{\"to\":\"$token\",\"data\":\"0x95d89b41\"},\"latest\"]")"
+  name_data="$(rpc "$rpc_url" "eth_call" "[{\"to\":\"$token\",\"data\":\"0x06fdde03\"},\"latest\"]")"
 
-  local response
-  response="$(rpc "$rpc_url" eth_call "[{\"to\":\"$token\",\"data\":\"$data\"},\"latest\"]")"
+  balance_hex="$(printf '%s' "$balance_data" | jq -r '.result // empty')"
+  decimals_hex="$(printf '%s' "$decimals_data" | jq -r '.result // empty')"
+  symbol_hex="$(printf '%s' "$symbol_data" | jq -r '.result // empty')"
+  name_hex="$(printf '%s' "$name_data" | jq -r '.result // empty')"
 
-  if [ "$JSON" = true ]; then
-    echo "$response"
-    return
+  if [[ -z "$balance_hex" || "$balance_hex" == "0x" ]]; then
+    die "ERC-20 balanceOf returned empty result: token may not be an ERC-20 contract"
   fi
 
-  local balance
-  balance="$(printf '%s' "$response" | sed -n 's/.*"result":"\([^"]*\)".*/\1/p')"
+  if [[ -z "$decimals_hex" || "$decimals_hex" == "0x" ]]; then
+    die "ERC-20 decimals() returned empty result: token may not be an ERC-20 contract"
+  fi
 
-  [ -n "$balance" ] || die "Invalid ERC-20 response"
+  balance_raw="$((16#${balance_hex#0x}))"
+  decimals="$((16#${decimals_hex#0x}))"
 
-  local decimal
-  decimal="$(hex_to_decimal "$balance")"
+  symbol="$(decode_abi_string "$symbol_hex" 2>/dev/null || true)"
+  name="$(decode_abi_string "$name_hex" 2>/dev/null || true)"
 
-  echo "Network: $network"
-  echo "Token: $token"
-  echo "Address: $address"
-  echo "Raw balance: $decimal"
+  [[ -n "$symbol" ]] || symbol="UNKNOWN"
+  [[ -n "$name" ]] || name="UNKNOWN"
+
+  local formatted
+  if (( decimals > 0 )); then
+    local raw="$balance_raw"
+    local len="${#raw}"
+
+    if (( len <= decimals )); then
+      raw="$(printf '%0*s' $((decimals + 1 - len)) '' | tr ' ' '0')$raw"
+      len="${#raw}"
+    fi
+
+    local whole="${raw:0:$((len - decimals))}"
+    local frac="${raw:$((len - decimals))}"
+    frac="${frac%"${frac##*[!0]}"}"
+
+    if [[ -z "$frac" ]]; then
+      formatted="$whole"
+    else
+      formatted="$whole.$frac"
+    fi
+  else
+    formatted="$balance_raw"
+  fi
+
+  if [[ "$mode" == "--json" ]]; then
+    jq -n \
+      --arg network "$network" \
+      --arg token "$token" \
+      --arg address "$address" \
+      --arg name "$name" \
+      --arg symbol "$symbol" \
+      --argjson decimals "$decimals" \
+      --arg raw "$balance_raw" \
+      --arg balance "$formatted" \
+      '{
+        network:$network,
+        token:$token,
+        address:$address,
+        name:$name,
+        symbol:$symbol,
+        decimals:$decimals,
+        balanceRaw:$raw,
+        balance:$balance
+      }'
+  else
+    echo "Network: $network"
+    echo "Token:   $token"
+    echo "Name:    $name"
+    echo "Symbol:  $symbol"
+    echo "Decimals: $decimals"
+    echo "Balance: $formatted $symbol"
+    echo "Raw:     $balance_raw"
+  fi
 }
 
 main() {
@@ -362,7 +446,11 @@ main() {
         shift
       done
 
-      cmd_erc20 "$network" "$rpc_url" "$token" "$address"
+      if [[ "$JSON" == true ]]; then
+        cmd_erc20 "$network" "$rpc_url" "$token" "$address" "--json"
+      else
+        cmd_erc20 "$network" "$rpc_url" "$token" "$address"
+      fi
       ;;
 
     *)
