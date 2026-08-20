@@ -2,7 +2,7 @@
 
 set -u
 
-VERSION="0.2.4"
+VERSION="0.3.0"
 
 RPC_BASE="https://mainnet.base.org"
 RPC_BASE_SEPOLIA="https://sepolia.base.org"
@@ -34,6 +34,9 @@ Commands:
   block
   balance <address> [--eth]
   tx <tx_hash>
+  code <address>
+  gas
+  nonce <address>
   erc20 <token> <address>
 
 Examples:
@@ -258,6 +261,110 @@ decode_abi_string() {
   printf '%s' "$data" | xxd -r -p
 }
 
+
+cmd_code() {
+  local network="$1"
+  local rpc_url="$2"
+  local address="$3"
+
+  [[ "$address" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "Invalid address"
+
+  local response code
+  response="$(rpc "$rpc_url" "eth_getCode" "[\"$address\",\"latest\"]")"
+  code="$(printf '%s' "$response" | jq -r '.result // empty')"
+
+  [[ -n "$code" ]] || die "eth_getCode failed"
+
+  local type="EOA"
+  if [[ "$code" != "0x" && "$code" != "0x0" ]]; then
+    type="CONTRACT"
+  fi
+
+  if [[ "$JSON" == true ]]; then
+    jq -n \
+      --arg network "$network" \
+      --arg address "$address" \
+      --arg type "$type" \
+      --arg code "$code" \
+      '{
+        network:$network,
+        address:$address,
+        type:$type,
+        code:$code
+      }'
+  else
+    echo "Network: $network"
+    echo "Address: $address"
+    echo "Type:    $type"
+    echo "Code:    $code"
+  fi
+}
+
+cmd_gas() {
+  local network="$1"
+  local rpc_url="$2"
+
+  local response gas_price
+  response="$(rpc "$rpc_url" "eth_gasPrice" "[]")"
+  gas_price="$(printf '%s' "$response" | jq -r '.result // empty')"
+
+  [[ -n "$gas_price" ]] || die "eth_gasPrice failed"
+
+  local wei="${gas_price#0x}"
+  local gas_dec=$((16#$wei))
+
+  if [[ "$JSON" == true ]]; then
+    jq -n \
+      --arg network "$network" \
+      --arg raw "$gas_price" \
+      --arg wei "$gas_dec" \
+      '{
+        network:$network,
+        gasPriceHex:$raw,
+        gasPriceWei:$wei
+      }'
+  else
+    echo "Network:      $network"
+    echo "Gas Price:    $gas_dec Wei"
+    echo "Gas Price Hex: $gas_price"
+  fi
+}
+
+cmd_nonce() {
+  local network="$1"
+  local rpc_url="$2"
+  local address="$3"
+
+  [[ "$address" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "Invalid address"
+
+  local response nonce_hex nonce
+  response="$(rpc "$rpc_url" "eth_getTransactionCount" "[\"$address\",\"latest\"]")"
+  nonce_hex="$(printf '%s' "$response" | jq -r '.result // empty')"
+
+  [[ -n "$nonce_hex" ]] || die "eth_getTransactionCount failed"
+
+  nonce=$((16#${nonce_hex#0x}))
+
+  if [[ "$JSON" == true ]]; then
+    jq -n \
+      --arg network "$network" \
+      --arg address "$address" \
+      --arg hex "$nonce_hex" \
+      --argjson nonce "$nonce" \
+      '{
+        network:$network,
+        address:$address,
+        nonce:$nonce,
+        nonceHex:$hex
+      }'
+  else
+    echo "Network: $network"
+    echo "Address: $address"
+    echo "Nonce:   $nonce"
+    echo "Hex:     $nonce_hex"
+  fi
+}
+
 cmd_erc20() {
   local network="$1"
   local rpc_url="$2"
@@ -459,6 +566,52 @@ main() {
       else
         cmd_erc20 "$network" "$rpc_url" "$token" "$address"
       fi
+      ;;
+
+    code)
+      [ "$#" -ge 1 ] || die "Usage: chain $network code <address>"
+
+      local address="$1"
+      shift
+
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --json) JSON=true ;;
+          *) die "Unknown option: $1" ;;
+        esac
+        shift
+      done
+
+      cmd_code "$network" "$rpc_url" "$address"
+      ;;
+
+    gas)
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --json) JSON=true ;;
+          *) die "Unknown option: $1" ;;
+        esac
+        shift
+      done
+
+      cmd_gas "$network" "$rpc_url"
+      ;;
+
+    nonce)
+      [ "$#" -ge 1 ] || die "Usage: chain $network nonce <address>"
+
+      local address="$1"
+      shift
+
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --json) JSON=true ;;
+          *) die "Unknown option: $1" ;;
+        esac
+        shift
+      done
+
+      cmd_nonce "$network" "$rpc_url" "$address"
       ;;
 
     *)
