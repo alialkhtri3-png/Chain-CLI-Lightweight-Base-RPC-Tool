@@ -1,2 +1,15 @@
 node_modules/
 .env
+node_modules/
+.cargo/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.db
+*.pid
+*.log
+*.bak
+*.backup
+*.swp
+.DS_Store
