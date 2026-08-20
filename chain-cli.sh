@@ -2,7 +2,7 @@
 
 set -u
 
-VERSION="0.2.2"
+VERSION="0.2.4"
 
 RPC_BASE="https://mainnet.base.org"
 RPC_BASE_SEPOLIA="https://sepolia.base.org"
@@ -231,12 +231,10 @@ decode_abi_string() {
   [[ -n "$hex" ]] || return 1
   (( ${#hex} % 2 == 0 )) || return 1
 
-  # ERC-20 metadata can be:
-  # 1) ABI dynamic string: offset + length + bytes
-  # 2) bytes32/static string
-
   local data=""
 
+  # ABI dynamic string:
+  # offset(32 bytes) + length(32 bytes) + data
   if (( ${#hex} >= 128 )); then
     local length_hex="${hex:64:64}"
 
@@ -249,17 +247,15 @@ decode_abi_string() {
     fi
   fi
 
+  # bytes32/static-string fallback
   if [[ -z "$data" ]]; then
     data="${hex%%00*}"
   fi
 
   [[ -n "$data" ]] || return 1
+  (( ${#data} % 2 == 0 )) || return 1
 
-  # Decode hexadecimal bytes without relying on printf "\xNN".
-  # xxd is available in normal Termux installations.
-  printf '%s' "$data" |
-    sed 's/../\\x&/g' |
-    xargs printf '%b' 2>/dev/null
+  printf '%s' "$data" | xxd -r -p
 }
 
 cmd_erc20() {
