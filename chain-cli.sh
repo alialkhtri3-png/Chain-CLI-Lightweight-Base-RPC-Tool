@@ -2,7 +2,7 @@
 
 set -u
 
-VERSION="0.2.0"
+VERSION="0.2.2"
 
 RPC_BASE="https://mainnet.base.org"
 RPC_BASE_SEPOLIA="https://sepolia.base.org"
@@ -229,25 +229,39 @@ decode_abi_string() {
   hex="${hex#0x}"
 
   [[ -n "$hex" ]] || return 1
+  (( ${#hex} % 2 == 0 )) || return 1
 
   # ABI dynamic string:
-  # offset(32) + length(32) + data
-  if [[ ${#hex} -ge 128 ]]; then
+  # offset(32 bytes) + length(32 bytes) + UTF-8/ASCII data
+  if (( ${#hex} >= 128 )); then
     local length_hex="${hex:64:64}"
-    length_hex="${length_hex#"${length_hex%%[!0]*}"}"
-    [[ -n "$length_hex" ]] || return 1
+    length_hex="${length_hex#0x}"
+
+    [[ "$length_hex" =~ ^[0-9a-fA-F]+$ ]] || return 1
+
     local length=$((16#$length_hex))
+
     if (( length >= 0 && length <= 4096 )); then
       local data="${hex:128:$((length * 2))}"
+
       if [[ -n "$data" ]]; then
-        printf '%s' "$data" | sed 's/../\\x&/g' | xargs printf '%b' 2>/dev/null || true
+        printf '%s' "$data" |
+          sed 's/../\\x&/g' |
+          xargs printf '%b' 2>/dev/null
         return 0
       fi
     fi
   fi
 
   # bytes32/static string fallback
-  printf '%s' "$hex" | sed 's/00*$//' | sed 's/../\\x&/g' | xargs printf '%b' 2>/dev/null
+  local static="$hex"
+  static="${static%%00*}"
+
+  [[ -n "$static" ]] || return 1
+
+  printf '%s' "$static" |
+    sed 's/../\\x&/g' |
+    xargs printf '%b' 2>/dev/null
 }
 
 cmd_erc20() {
